@@ -1,0 +1,173 @@
+import os
+import random
+import pandas as pd
+from pathlib import Path
+from psychopy import visual, core, event, gui
+
+# 1. SETUP INICIAL
+script_dir = Path(__file__).parent.absolute()
+os.chdir(script_dir)
+# Ajuste o caminho base conforme a sua máquina
+base_path = Path("C:\\Users\\Utilizador\\Desktop\\Objetos")
+
+stimuli_relations = {
+    "bucket": {"SD": "nutcraker", "SC": "bottle"},
+    "bottle": {"SD": "door handle", "SC": "jug"},
+    "spoon": {"SD": "shaver", "SC": "fork"},
+    "fork": {"SD": "board eraser", "SC": "Spoon"},
+    "jug": {"SD": "hanger", "SC": "bottle"},
+    "grater": {"SD": "paddle", "SC": "hand blender"},
+    "hanger": {"SD": "door handle", "SC": "cloth pin"}
+}
+
+def get_images_from_folder(obj_name, material_alvo=None):
+    try:
+        folders = {d.name.lower(): d for d in base_path.iterdir() if d.is_dir()}
+        obj_name_lower = obj_name.lower()
+        if obj_name_lower not in folders:
+            return [], None
+        
+        obj_dir = folders[obj_name_lower]
+        mats = [d for d in obj_dir.iterdir() if d.is_dir()]
+        
+        if material_alvo:
+            sel_mat = next((m for m in mats if m.name == material_alvo), random.choice(mats))
+        else:
+            sel_mat = random.choice(mats)
+            
+        return list(sel_mat.glob("*.png")) + list(sel_mat.glob("*.jpg")), sel_mat.name
+    except Exception as e:
+        print(f"Erro ao carregar {obj_name}: {e}")
+        return [], None
+
+def gerar_sequencia_blindada(lista_imgs, n_total):
+    if not lista_imgs: 
+        return []
+    
+    pool = list(set(lista_imgs))
+    if len(pool) == 1:
+        return pool * n_total
+    
+    sequencia = []
+    ultimo_adicionado = None
+    
+    while len(sequencia) < n_total:
+        copia_pool = list(pool)
+        random.shuffle(copia_pool)
+        for img in copia_pool:
+            if len(sequencia) >= n_total:
+                break
+            if img != ultimo_adicionado:
+                sequencia.append(img)
+                ultimo_adicionado = img
+    return sequencia
+
+# 2. GERAÇÃO DA LISTA DE 560 TRIALS
+lista_trials = []
+for obj in stimuli_relations.keys():
+    for comp in [5, 6, 7, 8, 9]:
+        for cond in ["SC_mesmo", "SC_difere", "SD_mesmo", "SD_difere"]:
+            for _ in range(4):
+                lista_trials.append({'adapt': obj, 'comp': comp, 'cond': cond})
+random.shuffle(lista_trials)
+
+pasta_resultados = script_dir / "00.Resultados"
+if not pasta_resultados.exists():
+    pasta_resultados.mkdir()
+
+# 3. JANELA E SAÍDA GLOBAL
+exp_info = {'ID': '', 'Sessão': '001'}
+gui.DlgFromDict(exp_info)
+win = visual.Window(fullscr=True, color=[1, 1, 1], units="pix")
+
+data_log = []
+
+def force_exit():
+    if len(data_log) > 0:
+        caminho_parcial = pasta_resultados / f"Parcial_{exp_info['ID']}.xlsx"
+        pd.DataFrame(data_log).to_excel(caminho_parcial, index=False)
+    win.close()
+    core.quit()
+
+event.globalKeys.add(key='escape', func=force_exit)
+
+# --- INSTRUÇÕES INICIAIS ---
+texto_intro = (
+    "BEM-VINDO!\n\n"
+    "Nesta experiência, irá ver sequências de imagens rapidamente.\n"
+    "Pressione ESPAÇO quando notar um objeto diferente.\n\n"
+    "Pressione ESPAÇO para começar."
+)
+visual.TextStim(win, text=texto_intro, color=[-1, -1, -1], height=25).draw()
+win.flip()
+event.waitKeys(keyList=['space'])
+
+global_clock = core.Clock()
+trial_clock = core.Clock()
+
+# 4. LOOP EXPERIMENTAL
+for t_idx, trial in enumerate(lista_trials):
+    if t_idx in [187, 373]:
+        msg_pausa = f"PAUSA ({1 if t_idx==187 else 2}/3)\n\nPressione ESPAÇO para continuar."
+        visual.TextStim(win, text=msg_pausa, color=[-1,-1,-1]).draw()
+        win.flip()
+        event.waitKeys(keyList=['space'])
+
+    all_clicks = []
+    imgs_a, mat_a = get_images_from_folder(trial['adapt'])
+    if not imgs_a: continue
+
+    # --- ADAPTAÇÃO
+    seq_adapt = gerar_sequencia_blindada(imgs_a, trial['comp'])
+    trial_clock.reset()
+    
+    for img_path in seq_adapt:
+        visual.ImageStim(win, image=str(img_path), size=(400, 400)).draw()
+        win.flip()
+        for k in event.getKeys(keyList=['space'], timeStamped=trial_clock):
+            all_clicks.append(f"FAlarme_{k[1]:.3f}")
+        core.wait(0.4)
+        win.flip()
+        core.wait(0.1)
+
+    # --- DEVIANTE
+    tipo_s = "SC" if "SC" in trial['cond'] else "SD"
+    dev_n = stimuli_relations[trial['adapt']][tipo_s]
+    cond_mat = "Mesmo" if "mesmo" in trial['cond'] else "Diferente"
+    
+    mat_alvo = mat_a if cond_mat == "Mesmo" else None
+    imgs_d, _ = get_images_from_folder(dev_n, material_alvo=mat_alvo)
+    
+    if not imgs_d: continue
+    seq_dev = gerar_sequencia_blindada(imgs_d, 4)
+    dev_start = trial_clock.getTime()
+
+    for i, dev_path in enumerate(seq_dev):
+        visual.ImageStim(win, image=str(dev_path), size=(400, 400)).draw()
+        win.flip()
+        timer = core.CountdownTimer(0.4)
+        while timer.getTime() > 0:
+            for k in event.getKeys(keyList=['space'], timeStamped=trial_clock):
+                all_clicks.append(f"Dev{i+1}_RT_{k[1]-dev_start:.3f}")
+        win.flip()
+        core.wait(0.1)
+
+    # 5. REGISTO (Nomes de colunas claros)
+    data_log.append({
+        'N_Trial': t_idx + 1,
+        'Objeto_Adaptador': trial['adapt'],
+        'Objeto_Deviante': dev_n,
+        'Relacao_Semantica': tipo_s,
+        'Condicao_Material': cond_mat,
+        'Pasta_Material_Original': mat_a,
+        'Num_Repeticoes_Adapt': trial['comp'],
+        'Respostas_RT_String': ", ".join(all_clicks)
+    })
+
+# 6. FECHO
+nome_ficheiro = f"res_{exp_info['ID']}_{exp_info['Sessão']}.xlsx"
+caminho_final = pasta_resultados / nome_ficheiro
+pd.DataFrame(data_log).to_excel(caminho_final, index=False)
+
+win.close()
+core.quit()
